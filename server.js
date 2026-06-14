@@ -6,72 +6,97 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- MONGODB CONNECTION ---
-// On Render, we will set this in Environment Variables
-const mongoURI = process.env.MONGODB_URI || "PASTE_YOUR_CONNECTION_STRING_HERE";
+// --- DATABASE CONNECTION ---
+let mongoURI = process.env.MONGODB_URI || "";
+mongoURI = mongoURI.replace(/[>"\s]/g, "").trim();
 
-mongoose.connect(mongoURI)
-    .then(() => console.log("Connected to MongoDB"))
-    .catch(err => console.error("MongoDB connection error:", err));
+const connectDB = async () => {
+    if (!mongoURI) {
+        console.error("❌ MONGODB_URI is missing in Render Settings!");
+        return;
+    }
+    
+    const maskedURI = mongoURI.replace(/:([^@]+)@/, ":****@");
+    console.log(`📡 Attempting to connect to: ${maskedURI}`);
+
+    try {
+        await mongoose.connect(mongoURI, { serverSelectionTimeoutMS: 5000 });
+        console.log("✅ Connected to MongoDB");
+        await seedData();
+    } catch (err) {
+        console.error("❌ MongoDB connection error:", err.message);
+    }
+};
 
 // --- SCHEMAS ---
-const UserSchema = new mongoose.Schema({
+const User = mongoose.model('User', new mongoose.Schema({
     id: String, name: String, email: { type: String, unique: true }, 
     password: String, role: String, token: String
-});
-const User = mongoose.model('User', UserSchema);
+}));
 
-const CheckpointSchema = new mongoose.Schema({ id: String, name: String, qrCode: String, latitude: Number, longitude: Number });
-const Checkpoint = mongoose.model('Checkpoint', CheckpointSchema);
+const Checkpoint = mongoose.model('Checkpoint', new mongoose.Schema({ 
+    id: String, name: String, qrCode: String, latitude: Number, longitude: Number 
+}));
 
-const PatrolLogSchema = new mongoose.Schema({ id: String, checkpointId: String, guardId: String, timestamp: Date, latitude: Number, longitude: Number });
-const PatrolLog = mongoose.model('PatrolLog', PatrolLogSchema);
+const PatrolLog = mongoose.model('PatrolLog', new mongoose.Schema({ 
+    id: String, checkpointId: String, guardId: String, timestamp: Date, latitude: Number, longitude: Number 
+}));
 
-// --- SEED ADMIN (Ensures you can always log in) ---
-async function seedAdmin() {
-    const adminExists = await User.findOne({ email: 'admin@palmcore.com' });
-    if (!adminExists) {
-        await User.create({
-            id: "1", name: "System Admin", email: "admin@palmcore.com", 
-            password: "password", role: "Admin", token: "init-token"
-        });
-        console.log("Seed: Admin account created.");
-    }
+const PalmBlock = mongoose.model('PalmBlock', new mongoose.Schema({
+    id: String, name: String, area: Number, treeCount: Number, plantedDate: Date
+}));
+
+const Truck = mongoose.model('Truck', new mongoose.Schema({
+    id: String, plateNumber: String, driverName: String, capacity: Number
+}));
+
+const EvacuationPoint = mongoose.model('EvacuationPoint', new mongoose.Schema({
+    id: String, blockId: String, estimatedQuantity: Number, harvestedAt: Date, latitude: Number, longitude: Number
+}));
+
+// --- SEED DATA ---
+async function seedData() {
+    try {
+        const adminExists = await User.findOne({ email: 'admin@palmcore.com' });
+        if (!adminExists) {
+            await User.create({ id: "1", name: "System Admin", email: "admin@palmcore.com", password: "password", role: "Admin", token: "init-token" });
+            console.log("🚀 Seed: Admin created.");
+        }
+        
+        const cpExists = await Checkpoint.findOne({ id: 'CP1' });
+        if (!cpExists) {
+            await Checkpoint.create({ id: "CP1", name: "Main Gate", qrCode: "GATE_001", latitude: 5.1, longitude: 8.5 });
+            console.log("🚀 Seed: Checkpoints created.");
+        }
+    } catch (e) { console.error("Seed error:", e.message); }
 }
-seedAdmin();
 
 // --- ROUTES ---
-
-// Auth: Login
 app.post('/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email, password });
+    const user = await User.findOne({ email: req.body.email, password: req.body.password });
     if (user) res.json(user);
     else res.status(401).json({ message: "Invalid credentials" });
 });
 
-// Auth: Create User (Admin Power)
 app.post('/auth/users', async (req, res) => {
-    try {
-        await User.create(req.body);
-        res.status(201).json({ message: "User created" });
-    } catch (e) { res.status(400).json({ error: e.message }); }
+    try { await User.create(req.body); res.status(201).json({ message: "OK" }); }
+    catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// Security: Get Checkpoints
-app.get('/security/checkpoints', async (req, res) => {
-    const list = await Checkpoint.find();
-    res.json(list);
-});
-
-// Security: Receive Logs
+app.get('/security/checkpoints', async (req, res) => res.json(await Checkpoint.find()));
 app.post('/security/patrol-logs', async (req, res) => {
     await PatrolLog.insertMany(req.body);
-    res.status(201).json({ message: "Logs saved" });
+    res.status(201).json({ message: "Saved" });
 });
 
-// Health Check
+app.get('/agritech/blocks', async (req, res) => res.json(await PalmBlock.find()));
+app.get('/logistics/trucks', async (req, res) => res.json(await Truck.find()));
+app.get('/logistics/evacuation-points', async (req, res) => res.json(await EvacuationPoint.find()));
+
 app.get('/', (req, res) => res.send("PalmCore API is Live & Persistent"));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+    connectDB();
+});
