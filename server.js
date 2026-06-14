@@ -6,25 +6,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- DATABASE CONNECTION ---
+// --- BULLETPROOF DATABASE CONNECTION ---
 let mongoURI = process.env.MONGODB_URI || "";
-mongoURI = mongoURI.replace(/[>"\s]/g, "").trim();
+
+// Remove ALL common mistake characters from the string
+mongoURI = mongoURI.replace(/[<>" \s]/g, "").trim();
 
 const connectDB = async () => {
     if (!mongoURI) {
-        console.error("❌ MONGODB_URI is missing in Render Settings!");
+        console.error("❌ MONGODB_URI is missing in Render Environment Variables!");
         return;
     }
     
+    // Safety check: Is there more than one @ symbol?
+    // A valid string has only ONE @ (the one before the cluster address)
+    // UNLESS the password was encoded correctly.
+    const atCount = (mongoURI.match(/@/g) || []).length;
+    
+    // Log the connection attempt safely
     const maskedURI = mongoURI.replace(/:([^@]+)@/, ":****@");
+    console.log(`📡 Connectivity: Detected ${atCount} '@' symbols.`);
     console.log(`📡 Attempting to connect to: ${maskedURI}`);
 
     try {
+        // Use a 5-second timeout so we don't hang forever
         await mongoose.connect(mongoURI, { serverSelectionTimeoutMS: 5000 });
-        console.log("✅ Connected to MongoDB");
+        console.log("✅ SUCCESS: Connected to MongoDB");
         await seedData();
     } catch (err) {
-        console.error("❌ MongoDB connection error:", err.message);
+        console.error("❌ CONNECTION FAILED:", err.message);
+        if (err.message.includes('EBADNAME')) {
+            console.error("👉 FIX: Your password contains an '@'. Ensure you used '%40' in Render settings.");
+        }
     }
 };
 
@@ -42,18 +55,6 @@ const PatrolLog = mongoose.model('PatrolLog', new mongoose.Schema({
     id: String, checkpointId: String, guardId: String, timestamp: Date, latitude: Number, longitude: Number 
 }));
 
-const PalmBlock = mongoose.model('PalmBlock', new mongoose.Schema({
-    id: String, name: String, area: Number, treeCount: Number, plantedDate: Date
-}));
-
-const Truck = mongoose.model('Truck', new mongoose.Schema({
-    id: String, plateNumber: String, driverName: String, capacity: Number
-}));
-
-const EvacuationPoint = mongoose.model('EvacuationPoint', new mongoose.Schema({
-    id: String, blockId: String, estimatedQuantity: Number, harvestedAt: Date, latitude: Number, longitude: Number
-}));
-
 // --- SEED DATA ---
 async function seedData() {
     try {
@@ -66,6 +67,7 @@ async function seedData() {
         const cpExists = await Checkpoint.findOne({ id: 'CP1' });
         if (!cpExists) {
             await Checkpoint.create({ id: "CP1", name: "Main Gate", qrCode: "GATE_001", latitude: 5.1, longitude: 8.5 });
+            await Checkpoint.create({ id: "CP2", name: "Warehouse B", qrCode: "WH_B_001", latitude: 5.12, longitude: 8.57 });
             console.log("🚀 Seed: Checkpoints created.");
         }
     } catch (e) { console.error("Seed error:", e.message); }
@@ -85,13 +87,9 @@ app.post('/auth/users', async (req, res) => {
 
 app.get('/security/checkpoints', async (req, res) => res.json(await Checkpoint.find()));
 app.post('/security/patrol-logs', async (req, res) => {
-    await PatrolLog.insertMany(req.body);
-    res.status(201).json({ message: "Saved" });
+    try { await PatrolLog.insertMany(req.body); res.status(201).json({ message: "Saved" }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-app.get('/agritech/blocks', async (req, res) => res.json(await PalmBlock.find()));
-app.get('/logistics/trucks', async (req, res) => res.json(await Truck.find()));
-app.get('/logistics/evacuation-points', async (req, res) => res.json(await EvacuationPoint.find()));
 
 app.get('/', (req, res) => res.send("PalmCore API is Live & Persistent"));
 
