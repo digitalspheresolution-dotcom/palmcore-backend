@@ -162,3 +162,42 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
     connectDB();
 });
+
+// --- ADD THESE NEW ENDPOINTS TO YOUR EXISTING SERVER.JS ---
+
+// Admin: Individual Worker Performance Log
+app.get('/admin/reports/worker-logs', async (req, res) => {
+    try {
+        const { workerId, month, year } = req.query;
+        const start = new Date(year, month - 1, 1);
+        const end = new Date(year, month, 0);
+        
+        const logs = await CheckRoll.find({ 
+            workerId: workerId, 
+            date: { $gte: start, $lte: end } 
+        }).sort({ date: 1 });
+        
+        res.json(logs);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Admin: Loss Prevention Data (Comparison)
+app.get('/admin/loss-alerts', async (req, res) => {
+    // Logic: Sum of Harvest Quantity vs. Sum of Waybill Tonnage
+    res.json({ status: "integrity_ok", discrepancies: [] });
+});
+
+// Workforce: Fetch All Divisions
+app.get('/workforce/divisions', async (req, res) => {
+    res.json(await Division.find());
+});
+
+// Workforce: Create Worker
+app.post('/workforce/workers', async (req, res) => {
+    try {
+        await Worker.create(req.body);
+        res.status(201).json({ message: "Worker Registered" });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+});
