@@ -7,7 +7,6 @@ app.use(cors());
 app.use(express.json());
 
 // --- DATABASE CONNECTION ---
-// Make sure MONGODB_URI is set in your Render.com Environment Variables
 let mongoURI = process.env.MONGODB_URI || "";
 mongoURI = mongoURI.replace(/[<>" \s]/g, "").trim();
 
@@ -18,7 +17,7 @@ const connectDB = async () => {
     }
     try {
         await mongoose.connect(mongoURI, { serverSelectionTimeoutMS: 5000 });
-        console.log("✅ Connected to MongoDB Atlas");
+        console.log("✅ Connected to MongoDB Atlas - PalmCore Master");
         await seedData();
     } catch (err) {
         console.error("❌ MongoDB connection error:", err.message);
@@ -26,11 +25,24 @@ const connectDB = async () => {
 };
 
 // --- SCHEMAS ---
+
+// 1. Auth & Hierarchy
 const User = mongoose.model('User', new mongoose.Schema({
     id: String, name: String, email: { type: String, unique: true }, 
-    password: String, role: String, token: String
+    password: String, role: String, // Admin, CSO, Manager, Supervisor
+    divisionId: String, // For Managers/Supervisors
+    token: String
 }));
 
+const Division = mongoose.model('Division', new mongoose.Schema({
+    id: String, name: String, managerId: String
+}));
+
+const Worker = mongoose.model('Worker', new mongoose.Schema({
+    id: String, name: String, headmanId: String, divisionId: String, category: String 
+}));
+
+// 2. Operations
 const Checkpoint = mongoose.model('Checkpoint', new mongoose.Schema({ 
     id: String, name: String, qrCode: String, latitude: Number, longitude: Number 
 }));
@@ -40,13 +52,14 @@ const PatrolLog = mongoose.model('PatrolLog', new mongoose.Schema({
 }));
 
 const PalmBlock = mongoose.model('PalmBlock', new mongoose.Schema({
-    id: String, name: String, area: Number, treeCount: Number, plantedDate: Date
+    id: String, name: String, area: Number, treeCount: Number, plantedDate: Date, divisionId: String
 }));
 
 const HarvestAssignment = mongoose.model('HarvestAssignment', new mongoose.Schema({
     id: String, blockId: String, supervisorId: String, date: Date, status: String
 }));
 
+// 3. Logistics & Weighbridge
 const Truck = mongoose.model('Truck', new mongoose.Schema({
     id: String, plateNumber: String, driverName: String, capacity: Number
 }));
@@ -60,88 +73,89 @@ const LogisticsRecord = mongoose.model('LogisticsRecord', new mongoose.Schema({
     timestamp: Date, destination: String, securityToken: String
 }));
 
+// 4. Payroll & Incidents
+const CheckRoll = mongoose.model('CheckRoll', new mongoose.Schema({
+    id: String, workerId: String, supervisorId: String, date: Date,
+    checkIn: Date, checkOut: Date, dailyRateAtTime: Number, isCompleted: { type: Boolean, default: false }
+}));
+
+const GlobalSettings = mongoose.model('GlobalSettings', new mongoose.Schema({
+    id: String, dailyWorkRate: Number 
+}));
+
 const Incident = mongoose.model('Incident', new mongoose.Schema({
     id: String, type: String, description: String, timestamp: Date, latitude: Number, longitude: Number
 }));
 
-// --- SEED DATA (Creates defaults if database is empty) ---
+// --- SEED DATA ---
 async function seedData() {
     try {
         const adminExists = await User.findOne({ email: 'admin@palmcore.com' });
         if (!adminExists) {
-            await User.create({ id: "1", name: "System Admin", email: "admin@palmcore.com", password: "password", role: "Admin", token: "init-token" });
-            console.log("🚀 Seed: Admin account created.");
+            await User.create({ id: "1", name: "System Admin", email: "admin@palmcore.com", password: "password", role: "Admin" });
+            console.log("🚀 Seed: Master Admin Ready.");
         }
-        
-        const cpExists = await Checkpoint.findOne({ id: 'CP1' });
-        if (!cpExists) {
-            await Checkpoint.create({ id: "CP1", name: "Main Gate", qrCode: "GATE_001", latitude: 5.1, longitude: 8.5 });
-            console.log("🚀 Seed: Default checkpoints created.");
-        }
+        const settings = await GlobalSettings.findOne({ id: 'estate_config' });
+        if (!settings) await GlobalSettings.create({ id: 'estate_config', dailyWorkRate: 3500 });
     } catch (e) { console.error("Seed error:", e.message); }
 }
 
 // --- ROUTES ---
 
-// 1. AUTH & USER MANAGEMENT
+// 1. SETTINGS & PAYROLL
+app.get('/admin/settings/rate', async (req, res) => {
+    const s = await GlobalSettings.findOne({ id: 'estate_config' });
+    res.json(s || { dailyWorkRate: 0 });
+});
+
+app.post('/admin/settings/rate', async (req, res) => {
+    await GlobalSettings.findOneAndUpdate({ id: 'estate_config' }, { dailyWorkRate: req.body.rate }, { upsert: true });
+    res.json({ message: "Rate Updated" });
+});
+
+// 2. AUTH & USER MGMT
 app.post('/auth/login', async (req, res) => {
     const user = await User.findOne({ email: req.body.email, password: req.body.password });
-    if (user) res.json(user);
-    else res.status(401).json({ message: "Invalid credentials" });
+    if (user) res.json(user); else res.status(401).json({ message: "Invalid credentials" });
 });
 
-app.get('/auth/users', async (req, res) => {
-    const users = await User.find({}, '-password');
-    res.json(users);
-});
+app.get('/auth/users', async (req, res) => res.json(await User.find({}, '-password')));
 
 app.post('/auth/users', async (req, res) => {
-    try { await User.create(req.body); res.status(201).json({ message: "User created" }); }
+    try { await User.create(req.body); res.status(201).json({ message: "Created" }); }
     catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/auth/users/:id', async (req, res) => {
-    await User.deleteOne({ id: req.params.id });
-    res.json({ message: "Deleted" });
+app.patch('/auth/users/:id/password', async (req, res) => {
+    await User.updateOne({ id: req.params.id }, { password: req.body.newPassword });
+    res.json({ message: "Updated" });
 });
 
-// 2. SECURITY (PALMSHIELD)
+// 3. SECURITY
 app.get('/security/checkpoints', async (req, res) => res.json(await Checkpoint.find()));
-app.post('/security/checkpoints', async (req, res) => {
-    await Checkpoint.create(req.body);
-    res.status(201).json({ message: "OK" });
-});
 app.post('/security/patrol-logs', async (req, res) => {
     await PatrolLog.insertMany(req.body);
     res.status(201).json({ message: "Synced" });
 });
-app.post('/security/incidents', async (req, res) => {
-    await Incident.insertMany(req.body);
-    res.status(201).json({ message: "Logged" });
-});
 
-// 3. AGRITECH (YIELDMAP)
+// 4. AGRITECH & LOGISTICS
 app.get('/agritech/blocks', async (req, res) => res.json(await PalmBlock.find()));
-app.post('/agritech/blocks', async (req, res) => {
-    await PalmBlock.create(req.body);
-    res.status(201).json({ message: "OK" });
-});
-app.get('/agritech/assignments', async (req, res) => res.json(await HarvestAssignment.find()));
-app.post('/agritech/yield-records', async (req, res) => {
-    // Logic to update evacuation points could go here
-    res.status(201).json({ message: "Yield logged" });
-});
-
-// 4. LOGISTICS (PALMLOGISTICS)
-app.get('/logistics/trucks', async (req, res) => res.json(await Truck.find()));
 app.get('/logistics/evacuation-points', async (req, res) => res.json(await EvacuationPoint.find()));
 app.post('/logistics/records', async (req, res) => {
     await LogisticsRecord.create(req.body);
-    res.status(201).json({ message: "Waybill generated" });
+    res.status(201).json({ message: "Waybill OK" });
 });
 
-// Health Check
-app.get('/', (req, res) => res.send("PalmCore API is Live & Persistent"));
+// 5. REPORTING
+app.get('/admin/reports/monthly', async (req, res) => {
+    const { month, year } = req.query;
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 0);
+    const production = await PatrolLog.find({ timestamp: { $gte: start, $lte: end } }); // Example aggregation
+    res.json({ production });
+});
+
+app.get('/', (req, res) => res.send("PalmCore Enterprise API - All Modules Active"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
